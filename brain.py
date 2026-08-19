@@ -47,6 +47,12 @@ multiple ranges only to remove a stumble/repeat inside one clip.
 """
 
 
+def slug(s):
+    """Filesystem-safe short id for output files (avoids spaces/&/() and length)."""
+    s = re.sub(r"[^A-Za-z0-9_-]+", "-", str(s)).strip("-")
+    return (s or "clip")[:60]
+
+
 def _load_env():
     path = os.path.join(HERE, ".env")
     if not os.path.isfile(path):

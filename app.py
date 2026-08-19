@@ -388,8 +388,7 @@ def recut():
             _annotate_graphics(job_dir, only=clip_id)
         _run("render", job_dir, clip_id)
         _run("caption", job_dir, clip_id)
-        stem = _stem(job_dir)
-        fname = f"{stem}__{clip_id}.mp4"
+        fname = f"{brain.slug(clip_id)}.mp4"
         meta = {"id": clip_id, "hook": clip.get("hook", ""), "why": clip.get("why", ""),
                 "hook_score": clip.get("hook_score"), "body_score": clip.get("body_score"),
                 "score": clip.get("score"), "score_reason": clip.get("score_reason", ""),

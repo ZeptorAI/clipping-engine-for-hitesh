@@ -28,6 +28,7 @@ ENGINE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ENGINE_DIR)
 import engine  # noqa: E402
 import romanize  # noqa: E402  (Hinglish captions; same folder)
+import brain  # noqa: E402  (slug helper for safe filenames)
 
 VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi")
 
@@ -171,7 +172,7 @@ def cmd_render(job_dir):
             cid = clip.get("id", f"clip{i}")
             if only and cid != only:
                 continue
-            out_mp4 = os.path.join(job_dir, f"{stem}__{cid}.mp4")
+            out_mp4 = os.path.join(job_dir, f"{brain.slug(cid)}.mp4")
             print(f"[{i}/{len(clips)}] {cid} -> {os.path.basename(out_mp4)}")
             pad = float(clip.get("pad", 0.15))
             gw = clip.get("graphic_windows")
@@ -319,11 +320,12 @@ def cmd_caption(job_dir):
         if os.environ.get("HINGLISH", "1") != "0":   # romanize Hindi -> Hinglish
             texts = romanize.romanize_lines([d[2] for d in dialogues])
             dialogues = [(d[0], d[1], t) for d, t in zip(dialogues, texts)]
-        ass_name = f"{stem}__{cid}.ass"
+        sid = brain.slug(cid)
+        ass_name = f"{sid}.ass"
         _write_ass(os.path.join(job_dir, ass_name), dialogues)
 
-        clip_mp4 = f"{stem}__{cid}.mp4"
-        tmp_mp4 = f"{stem}__{cid}.cap.mp4"
+        clip_mp4 = f"{sid}.mp4"
+        tmp_mp4 = f"{sid}.cap.mp4"
         # run inside job_dir so libass gets a simple relative filename
         cmd = ["ffmpeg", "-y", "-i", clip_mp4,
                "-vf", f"subtitles={ass_name}",
