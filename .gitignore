@@ -1,0 +1,8 @@
+# NEVER commit keys, user videos, or per-user learning
+.env
+jobs/
+__pycache__/
+*.pyc
+.venv/
+feedback.jsonl
+learning_summary.txt
