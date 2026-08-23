@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import traceback
 
 ENGINE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -284,6 +285,118 @@ def _group_cues(lw, max_words=4, max_span=1.8, max_gap=0.5):
     return dialogues
 
 
+def _ffmpeg_has_filter(name, _cache={}):
+    """True if this ffmpeg build exposes the given filter. Cached per process.
+
+    Homebrew's ffmpeg bottle on macOS ships WITHOUT libass/libfreetype, so
+    `subtitles`/`ass`/`drawtext` don't exist and any caption burn using them
+    dies with 'No such filter: subtitles'. Windows/most builds do have it,
+    hence the Mac-only breakage. Probe once and pick a burn path accordingly."""
+    if name not in _cache:
+        try:
+            p = subprocess.run(["ffmpeg", "-hide_banner", "-filters"],
+                               capture_output=True, text=True)
+            _cache[name] = bool(re.search(rf"(?m)^\s*\S+\s+{re.escape(name)}\s",
+                                          p.stdout))
+        except Exception:
+            _cache[name] = False
+    return _cache[name]
+
+
+# --- Pillow overlay fallback (when ffmpeg has no libass `subtitles` filter) ---
+# Mirrors CAP_STYLE: white bold text, thick black outline, bottom-centre, same
+# 1080x1920 play-space and 600px bottom margin, so captions land where libass
+# would put them. Captions are romanized Hinglish; Arial Unicode also covers
+# Devanagari if romanization was skipped.
+_CAP_FONTS = [
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    "/Library/Fonts/Arial Unicode.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    "C:/Windows/Fonts/arialuni.ttf",
+    "C:/Windows/Fonts/ariblk.ttf",
+]
+_PLAY_W, _PLAY_H = 1080, 1920
+_CAP_FONTSIZE, _CAP_MARGIN_H, _CAP_MARGIN_V, _CAP_OUTLINE = 64, 80, 600, 6
+
+
+def _cap_font():
+    from PIL import ImageFont
+    for p in _CAP_FONTS:
+        if os.path.isfile(p):
+            return ImageFont.truetype(p, _CAP_FONTSIZE)
+    return ImageFont.load_default()
+
+
+def _wrap(draw, text, font, max_w):
+    lines, cur = [], ""
+    for word in text.split():
+        trial = word if not cur else cur + " " + word
+        if draw.textlength(trial, font=font) <= max_w or not cur:
+            cur = trial
+        else:
+            lines.append(cur); cur = word
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _render_cue_png(text, path, font):
+    """One transparent 1080x1920 frame with the caption drawn where libass would."""
+    from PIL import Image, ImageDraw
+    img = Image.new("RGBA", (_PLAY_W, _PLAY_H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    max_w = _PLAY_W - 2 * _CAP_MARGIN_H
+    lines = _wrap(draw, text, font, max_w)
+    asc, desc = font.getmetrics()
+    line_h = asc + desc + 2 * _CAP_OUTLINE + 10
+    block_h = line_h * len(lines)
+    y = (_PLAY_H - _CAP_MARGIN_V) - block_h            # block bottom at 1920-600
+    for ln in lines:
+        w = draw.textlength(ln, font=font)
+        x = (_PLAY_W - w) / 2.0
+        draw.text((x, y), ln, font=font, fill=(255, 255, 255, 255),
+                  stroke_width=_CAP_OUTLINE, stroke_fill=(0, 0, 0, 255))
+        y += line_h
+    img.save(path)
+
+
+def _burn_captions_overlay(job_dir, clip_mp4, tmp_mp4, dialogues):
+    """Burn captions without libass: render each cue to a PNG and composite with
+    ffmpeg's overlay filter, gated per-cue by enable='between(t,start,end)'."""
+    if not dialogues:                       # nothing to burn — keep the clip as-is
+        os.replace(os.path.join(job_dir, clip_mp4), os.path.join(job_dir, tmp_mp4))
+        return
+    font = _cap_font()
+    # absolute tmpdir: ffmpeg runs with cwd=job_dir, so relative image paths
+    # under job_dir would resolve twice. Absolute paths are cwd-independent.
+    imgs, tmpdir = [], tempfile.mkdtemp(prefix="cap_", dir=os.path.abspath(job_dir))
+    try:
+        cmd = ["ffmpeg", "-y", "-i", clip_mp4]
+        for i, (s, e, text) in enumerate(dialogues):
+            png = os.path.join(tmpdir, f"c{i}.png")
+            _render_cue_png(text, png, font)
+            imgs.append((png, s, e))
+            cmd += ["-i", png]
+        parts, prev = [], "[0:v]"
+        n = len(dialogues)
+        for i, (_, s, e) in enumerate(imgs):
+            lbl = "[vout]" if i == n - 1 else f"[o{i}]"
+            parts.append(f"{prev}[{i+1}:v]overlay=0:0:"
+                         f"enable='between(t,{s:.3f},{e:.3f})'{lbl}")
+            prev = lbl
+        cmd += ["-filter_complex", ";".join(parts),
+                "-map", "[vout]", "-map", "0:a?",
+                "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+                "-c:a", "copy", "-movflags", "+faststart", tmp_mp4]
+        p = subprocess.run(cmd, cwd=job_dir, capture_output=True, text=True)
+        if p.returncode != 0:
+            print(p.stderr[-1500:], file=sys.stderr)
+            raise RuntimeError("overlay caption burn failed")
+    finally:
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def _write_ass(path, dialogues):
     head = (
         "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n"
@@ -326,16 +439,26 @@ def cmd_caption(job_dir):
 
         clip_mp4 = f"{sid}.mp4"
         tmp_mp4 = f"{sid}.cap.mp4"
-        # run inside job_dir so libass gets a simple relative filename
-        cmd = ["ffmpeg", "-y", "-i", clip_mp4,
-               "-vf", f"subtitles=filename={ass_name}",  # explicit opt name: version-proof
-               "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-               "-c:a", "copy", "-movflags", "+faststart", tmp_mp4]
         print(f"[caption] {cid}: {len(dialogues)} cues")
-        p = subprocess.run(cmd, cwd=job_dir, capture_output=True, text=True)
-        if p.returncode != 0:
-            print(p.stderr[-1500:], file=sys.stderr)
-            sys.exit(f"caption ffmpeg failed for {cid}")
+        use_libass = (_ffmpeg_has_filter("subtitles")
+                      and os.environ.get("CAP_FORCE_OVERLAY") != "1")
+        if use_libass:
+            # libass path (Windows / ffmpeg builds with libass). Run inside
+            # job_dir so libass gets a simple relative filename.
+            cmd = ["ffmpeg", "-y", "-i", clip_mp4,
+                   "-vf", f"subtitles=filename={ass_name}",  # explicit opt name
+                   "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+                   "-c:a", "copy", "-movflags", "+faststart", tmp_mp4]
+            p = subprocess.run(cmd, cwd=job_dir, capture_output=True, text=True)
+            if p.returncode != 0:
+                print(p.stderr[-1500:], file=sys.stderr)
+                sys.exit(f"caption ffmpeg failed for {cid}")
+        else:
+            # No libass (common on Homebrew macOS): burn via Pillow PNGs + overlay.
+            try:
+                _burn_captions_overlay(job_dir, clip_mp4, tmp_mp4, dialogues)
+            except Exception as e:
+                sys.exit(f"caption ffmpeg failed for {cid}: {e}")
         os.replace(os.path.join(job_dir, tmp_mp4),
                    os.path.join(job_dir, clip_mp4))
     print("caption ok")

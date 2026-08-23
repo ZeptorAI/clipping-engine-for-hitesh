@@ -5,7 +5,7 @@ echo   Clip Editor - one-time setup
 echo ============================================
 echo.
 echo Installing Python dependencies...
-python -m pip install --quiet --upgrade flask anthropic requests
+python -m pip install --quiet --upgrade flask anthropic requests pillow
 if errorlevel 1 (
   echo.
   echo ERROR: Could not install dependencies. Is Python installed?

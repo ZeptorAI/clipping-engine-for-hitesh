@@ -37,7 +37,7 @@ fi
 echo "Setting up Python environment..."
 python3 -m venv .venv
 ./.venv/bin/python -m pip install --upgrade pip
-./.venv/bin/pip install flask anthropic requests
+./.venv/bin/pip install flask anthropic requests pillow
 
 echo ""
 echo "Setup complete!  Now double-click  start.command  to run the app."
