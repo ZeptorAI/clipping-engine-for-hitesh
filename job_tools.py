@@ -328,7 +328,7 @@ def cmd_caption(job_dir):
         tmp_mp4 = f"{sid}.cap.mp4"
         # run inside job_dir so libass gets a simple relative filename
         cmd = ["ffmpeg", "-y", "-i", clip_mp4,
-               "-vf", f"subtitles={ass_name}",
+               "-vf", f"subtitles=filename={ass_name}",  # explicit opt name: version-proof
                "-c:v", "libx264", "-preset", "medium", "-crf", "20",
                "-c:a", "copy", "-movflags", "+faststart", tmp_mp4]
         print(f"[caption] {cid}: {len(dialogues)} cues")
