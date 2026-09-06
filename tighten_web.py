@@ -11,10 +11,13 @@ review.py -> cleaned media + conform log + a list of spans worth checking.
 
 import json
 import os
+import re
 import threading
 import time
 import traceback
 import uuid
+
+from urllib.parse import quote
 
 from flask import Blueprint, jsonify, request
 
@@ -57,6 +60,18 @@ def _write_status(job_dir, **kw):
     st.update(kw)
     with open(_status_path(job_dir), "w", encoding="utf-8") as f:
         json.dump(st, f, ensure_ascii=False, indent=2)
+
+
+def _safe_name(name):
+    """Filesystem/URL-safe version of an uploaded filename, extension intact.
+
+    A browser download of "Yt2.m4a" comes back as "Yt2.m4a (1).mp4"; those spaces
+    and parens land in /jobs/<id>/<file> and the download link fails.
+    """
+    base = os.path.basename(name or "upload")
+    stem, ext = os.path.splitext(base)
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-") or "upload"
+    return stem[:80] + ext.lower()
 
 
 def _find_media(job_dir):
@@ -114,9 +129,11 @@ def _pipeline(job_dir, job_id):
             mode="tighten", tighten=stats, flags=flags,
             cost=usage or _read_status(job_dir).get("cost"),
             outputs=[
-                {"name": out_name, "url": "/jobs/%s/%s" % (job_id, out_name),
+                {"name": out_name,
+                 "url": "/jobs/%s/%s" % (job_id, quote(out_name)),
                  "label": "Cleaned " + ("video" if has_video else "audio")},
-                {"name": log_name, "url": "/jobs/%s/%s" % (job_id, log_name),
+                {"name": log_name,
+                 "url": "/jobs/%s/%s" % (job_id, quote(log_name)),
                  "label": "Conform log"},
             ])
     except Exception as e:
@@ -137,12 +154,13 @@ def submit():
     job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
     job_dir = os.path.join(_JOBS_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
-    media.save(os.path.join(job_dir, os.path.basename(media.filename)))
+    fname = _safe_name(media.filename)
+    media.save(os.path.join(job_dir, fname))
     tr = request.files.get("transcript")
     if tr and tr.filename:
         tr.save(os.path.join(job_dir, "transcript.json"))
     _write_status(job_dir, status="processing", stage="Queued...", message="",
-                  mode="tighten", video=os.path.basename(media.filename))
+                  mode="tighten", video=fname)
     threading.Thread(target=_pipeline, args=(job_dir, job_id), daemon=True).start()
     return {"ok": True, "job_id": job_id}
 
