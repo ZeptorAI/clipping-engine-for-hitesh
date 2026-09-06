@@ -74,9 +74,14 @@ echo "    $SG  (ssh limited to ${MYIP%$'\n'})"
 
 # ---------- launch ----------
 say "Launching $TYPE"
-AMI=$(aws_ ssm get-parameter \
-      --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
-      --query Parameter.Value --output text)
+# newest Ubuntu 24.04 published by Canonical (owner 099720109477).
+# Direct query, not the SSM alias - the alias is not resolvable in every account.
+AMI=$(aws_ ec2 describe-images --owners 099720109477 \
+      --filters "Name=name,Values=ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*" \
+                "Name=state,Values=available" \
+      --query 'sort_by(Images,&CreationDate)[-1].ImageId' --output text)
+[ -n "$AMI" ] && [ "$AMI" != "None" ] || { echo "!! could not resolve an Ubuntu AMI"; exit 1; }
+echo "    ami       : $AMI"
 # inject config as exports right after the shebang (portable; no envsubst)
 USERDATA=$( { head -1 "$HERE/bootstrap.sh";
               echo "export REPO_URL='$REPO_URL'";
