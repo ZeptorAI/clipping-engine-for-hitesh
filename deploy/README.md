@@ -36,6 +36,16 @@ bash deploy/provision.sh
 Takes ~5 minutes. It prints the URL, username and a generated password at the
 end. **Save the password — it is not stored anywhere.**
 
+### Swapping the password for a one-click link
+
+If you would rather share a link than a password, replace the `basic_auth`
+block in `/etc/caddy/Caddyfile` with a cookie gate. Visiting `/k/<token>` once
+sets a year-long cookie; every later request carries it, and anything without
+it gets a bare 404 (so the host is not advertised to scanners that mine
+Certificate Transparency logs). See the deployed Caddyfile for the exact shape —
+note the unlock route must `respond` with an HTML meta-refresh rather than
+`redir`, which loses to Caddy's directive ordering and returns 200.
+
 You get:
 
 | | |
@@ -83,9 +93,11 @@ sudo systemctl restart clipeditor    # restart app
 ssh ... 'cd /opt/clipeditor && git pull && sudo systemctl restart clipeditor'
 ```
 
-**Changing the password:** edit `/etc/caddy/Caddyfile`, replacing the hash with
-the output of `caddy hash-password --plaintext 'newpass'`, then
-`sudo systemctl restart caddy`.
+**Changing the password (or the link token):** edit `/etc/caddy/Caddyfile` —
+for basic auth replace the hash with the output of
+`caddy hash-password --plaintext 'newpass'`; for the cookie gate change the
+token in both the `@unlocked` matcher and the `/k/<token>` route. Then
+`sudo systemctl restart caddy`. Changing either revokes access for everyone.
 
 Uploaded media and finished cuts are deleted after 7 days by a daily cron.
 
