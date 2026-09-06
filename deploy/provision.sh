@@ -17,6 +17,7 @@ NAME="${NAME:-clipeditor}"
 KEY_PATH="${KEY_PATH:-$HOME/.ssh/${NAME}.pem}"
 BASIC_USER="${BASIC_USER:-hitesh}"
 REPO_URL="${REPO_URL:-https://github.com/ZeptorAI/clipping-engine-for-hitesh.git}"
+BRANCH="${BRANCH:-main}"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
@@ -76,8 +77,11 @@ say "Launching $TYPE"
 AMI=$(aws_ ssm get-parameter \
       --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
       --query Parameter.Value --output text)
-USERDATA=$(REPO_URL="$REPO_URL" envsubst '$REPO_URL' < "$HERE/bootstrap.sh" 2>/dev/null \
-           || cat "$HERE/bootstrap.sh")
+# inject config as exports right after the shebang (portable; no envsubst)
+USERDATA=$( { head -1 "$HERE/bootstrap.sh";
+              echo "export REPO_URL='$REPO_URL'";
+              echo "export BRANCH='$BRANCH'";
+              tail -n +2 "$HERE/bootstrap.sh"; } )
 IID=$(aws_ ec2 run-instances --image-id "$AMI" --instance-type "$TYPE" \
       --key-name "$NAME" --security-group-ids "$SG" \
       --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=$DISK_GB,VolumeType=gp3}" \

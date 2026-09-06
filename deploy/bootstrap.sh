@@ -9,6 +9,7 @@
 set -euxo pipefail
 
 REPO="${REPO_URL:-https://github.com/ZeptorAI/clipping-engine-for-hitesh.git}"
+BRANCH="${BRANCH:-main}"
 APP_DIR=/opt/clipeditor
 RUN_USER=ubuntu
 
@@ -18,7 +19,7 @@ apt-get install -y python3-venv python3-pip ffmpeg git curl debian-keyring \
                    debian-archive-keyring apt-transport-https
 
 # ---------- app ----------
-git clone --depth 1 "$REPO" "$APP_DIR" || (cd "$APP_DIR" && git pull)
+git clone --depth 1 -b "$BRANCH" "$REPO" "$APP_DIR" || (cd "$APP_DIR" && git pull)
 cd "$APP_DIR"
 python3 -m venv .venv
 ./.venv/bin/pip install --upgrade pip
