@@ -198,6 +198,10 @@ STYLE = r"""
     background:#141418; border:1px solid #26262c; border-radius:10px;
     padding:10px 14px; margin-bottom:20px; font-size:13px; color:#b7b7bf; }
   .bar b { color:#e8e8ea; }
+  .modes { display:flex; gap:8px; margin-bottom:18px; }
+  .modes a { flex:1; text-align:center; padding:9px; border-radius:9px; font-size:13px;
+    text-decoration:none; border:1px solid #26262c; color:#9a9aa2; background:#141418; }
+  .modes a.on { background:#6c6cf0; border-color:#6c6cf0; color:#fff; font-weight:600; }
   .drop { display:block; border:1.5px dashed #3a3a40; border-radius:12px; padding:20px;
     margin-bottom:12px; cursor:pointer; transition:border-color .15s,background .15s; }
   .drop:hover,.drop.over { border-color:#6c6cf0; background:#17171b; }
@@ -240,6 +244,7 @@ PAGE = ("""<!doctype html><meta charset="utf-8">
 <title>Clip Editor</title><style>""" + STYLE + """</style>
 <h1>Clip Editor</h1>
 <p class="sub">Drop a long video. It transcribes, finds, scores, cuts and captions the best clips. Rate them and it learns.</p>
+<div class="modes"><a href="/" class="on">Make clips</a><a href="/tighten">Tighten a VO</a></div>
 <div class="bar"><a href="/learning" style="color:#6c6cf0;text-decoration:none">&#129504; What it&rsquo;s learned</a><span>Session spend <b id="total">$0.00</b></span></div>
 <form id="form">
   <label class="drop" id="d-video"><div class="label">1 &middot; Long-form video</div>
@@ -528,6 +533,13 @@ def job_view(job_id):
 @app.route("/jobs/<job>/<name>")
 def job_file(job, name):
     return send_from_directory(os.path.join(JOBS_DIR, job), name)
+
+
+# --- tightening engine, mounted at /tighten (separate blueprint so a change
+# --- there cannot break the clip-making flow above)
+import tighten_web
+tighten_web.init(JOBS_DIR, STYLE)
+app.register_blueprint(tighten_web.bp)
 
 
 if __name__ == "__main__":

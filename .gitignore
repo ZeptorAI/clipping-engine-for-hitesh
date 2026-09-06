@@ -6,3 +6,9 @@ __pycache__/
 .venv/
 feedback.jsonl
 learning_summary.txt
+
+# tightening engine scratch (should never be committed)
+fg_*.txt
+sil_*.txt
+keep_*.json
+tmp_*_p1.*

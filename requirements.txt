@@ -1,0 +1,6 @@
+flask>=3.0
+anthropic>=0.40
+requests>=2.31
+
+# production server (Linux only - locally app.py runs Flask's own server)
+gunicorn>=21.2; sys_platform != "win32"
