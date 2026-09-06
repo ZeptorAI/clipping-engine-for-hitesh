@@ -9,6 +9,10 @@
 # Creates: elastic IP, security group, key pair, one EC2 instance.
 # Prints:  the HTTPS URL and the password to share.
 set -euo pipefail
+# Git Bash mangles POSIX-looking arguments (/dev/sda1, /etc/caddy/...) into
+# Windows paths. Harmless no-op on macOS/Linux.
+export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL="*"
 
 REGION="${REGION:-ap-south-1}"          # Mumbai - closest to you
 TYPE="${TYPE:-t3.small}"                # 2 GB RAM; t3.micro is half the cost but tight
@@ -30,13 +34,21 @@ say "Checking credentials"
 aws_ sts get-caller-identity --query 'Account' --output text
 
 # ---------- password ----------
-PASS="${PASS:-$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)}"
+# NB: must not end in `| head -c N` - that SIGPIPEs the producer and, with
+# pipefail + set -e, silently kills this script.
+PASS="${PASS:-$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | cut -c1-20)}"
 
 # ---------- elastic IP (allocate first: the hostname is derived from it) ----------
 say "Allocating a static IP"
-ALLOC_ID=$(aws_ ec2 allocate-address --domain vpc \
-           --tag-specifications "ResourceType=elastic-ip,Tags=[{Key=Name,Value=$NAME}]" \
-           --query AllocationId --output text)
+ALLOC_ID=$(aws_ ec2 describe-addresses --filters "Name=tag:Name,Values=$NAME" \
+           --query 'Addresses[0].AllocationId' --output text 2>/dev/null || echo None)
+if [ "$ALLOC_ID" = "None" ] || [ -z "$ALLOC_ID" ]; then
+  ALLOC_ID=$(aws_ ec2 allocate-address --domain vpc \
+             --tag-specifications "ResourceType=elastic-ip,Tags=[{Key=Name,Value=$NAME}]" \
+             --query AllocationId --output text)
+else
+  echo "    reusing $ALLOC_ID"
+fi
 IP=$(aws_ ec2 describe-addresses --allocation-ids "$ALLOC_ID" \
      --query 'Addresses[0].PublicIp' --output text)
 SITE_HOST="${IP}.nip.io"     # resolves to $IP, so Caddy can get a real cert
@@ -49,6 +61,7 @@ mkdir -p "$(dirname "$KEY_PATH")"
 if [ -f "$KEY_PATH" ]; then
   echo "    reusing $KEY_PATH"
 else
+  aws_ ec2 delete-key-pair --key-name "$NAME" 2>/dev/null || true
   aws_ ec2 create-key-pair --key-name "$NAME" \
     --query KeyMaterial --output text > "$KEY_PATH"
   chmod 600 "$KEY_PATH"
@@ -60,8 +73,15 @@ say "Creating security group"
 MYIP=$(curl -s https://checkip.amazonaws.com || echo "0.0.0.0")
 VPC=$(aws_ ec2 describe-vpcs --filters Name=isDefault,Values=true \
       --query 'Vpcs[0].VpcId' --output text)
-SG=$(aws_ ec2 create-security-group --group-name "$NAME" --vpc-id "$VPC" \
-     --description "Clip Editor" --query GroupId --output text)
+SG=$(aws_ ec2 describe-security-groups --filters "Name=group-name,Values=$NAME" \
+     --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo None)
+if [ "$SG" = "None" ] || [ -z "$SG" ]; then
+  SG=$(aws_ ec2 create-security-group --group-name "$NAME" --vpc-id "$VPC" \
+       --description "Clip Editor" --query GroupId --output text)
+else
+  echo "    reusing $SG"
+fi
+# ingress rules are additive; ignore "already exists"
 # 80/443 open to the world (Caddy needs 80 for the cert challenge; auth is at the
 # proxy). SSH locked to the machine running this script.
 aws_ ec2 authorize-security-group-ingress --group-id "$SG" \
@@ -69,7 +89,7 @@ aws_ ec2 authorize-security-group-ingress --group-id "$SG" \
     "IpProtocol=tcp,FromPort=80,ToPort=80,IpRanges=[{CidrIp=0.0.0.0/0}]" \
     "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=0.0.0.0/0}]" \
     "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${MYIP%$'\n'}/32,Description=admin}]" \
-  >/dev/null
+  >/dev/null 2>&1 || true
 echo "    $SG  (ssh limited to ${MYIP%$'\n'})"
 
 # ---------- launch ----------

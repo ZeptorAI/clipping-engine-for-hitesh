@@ -256,6 +256,26 @@ def filtergraph(keeps, has_video, path):
     open(path, "w", encoding="utf-8").write(";\n".join(parts))
 
 
+_FILTER_FLAG = None
+
+
+def filter_flag():
+    """How this ffmpeg accepts a filtergraph from a file.
+
+    The graph runs to tens of KB - well past a command-line length limit - so it
+    has to come from a file. ffmpeg >= 7 spells that `-/filter_complex FILE`;
+    6.x (Ubuntu 24.04 ships 6.1) only has `-filter_complex_script FILE`. Neither
+    build accepts the other's spelling, so pick by version.
+    """
+    global _FILTER_FLAG
+    if _FILTER_FLAG is None:
+        r = sh("ffmpeg -hide_banner -version")
+        m = re.search(r"ffmpeg version n?(\d+)", (r.stdout or "") + (r.stderr or ""))
+        _FILTER_FLAG = ("-/filter_complex" if (m and int(m.group(1)) >= 7)
+                        else "-filter_complex_script")
+    return _FILTER_FLAG
+
+
 def render(media, fg, out, has_video):
     maps = '-map "[outv]" -map "[outa]"' if has_video else '-map "[outa]"'
     if has_video:
@@ -265,8 +285,17 @@ def render(media, fg, out, has_video):
         codec = "-c:a pcm_s16le"
     else:
         codec = "-c:a aac -b:a 192k"
-    r = sh('ffmpeg -y -hide_banner -loglevel error -i "%s" -/filter_complex "%s" %s %s "%s"'
-           % (media, fg, maps, codec, out))
+    def run(flag):
+        return sh('ffmpeg -y -hide_banner -loglevel error -i "%s" %s "%s" %s %s "%s"'
+                  % (media, flag, fg, maps, codec, out))
+
+    r = run(filter_flag())
+    if r.returncode != 0 and "Unrecognized option" in ((r.stderr or "") + (r.stdout or "")):
+        # version sniff was wrong for this build - try the other spelling once
+        global _FILTER_FLAG
+        _FILTER_FLAG = ("-filter_complex_script" if _FILTER_FLAG == "-/filter_complex"
+                        else "-/filter_complex")
+        r = run(_FILTER_FLAG)
     if r.returncode != 0:
         raise RuntimeError("ffmpeg render failed: "
                            + ((r.stderr or r.stdout or "")[-600:]))
