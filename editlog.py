@@ -16,7 +16,7 @@ def tc(t):
     return "%02d:%02d:%06.3f" % (int(t // 3600), int(t % 3600 // 60), t % 60)
 
 
-def write_editlog(path, source_name, stats, lines, flags=None):
+def write_editlog(path, source_name, stats, lines, flags=None, fixes=None):
     with io.open(path, "w", encoding="utf-8") as f:
         f.write("FAST-CUT CONFORM LIST\n")
         f.write("=" * 78 + "\n")
@@ -31,6 +31,14 @@ def write_editlog(path, source_name, stats, lines, flags=None):
                 % (stats["speech_before_sec"], stats["speech_after_sec"],
                    stats["speech_kept_pct"]))
         f.write("=" * 78 + "\n\n")
+
+        if fixes:
+            f.write("AUTO-REPAIRS APPLIED (%d)\n" % len(fixes))
+            f.write("-" * 78 + "\n")
+            for fx in fixes:
+                f.write("  at %s  %s\n" % (tc(fx["win"][0]), fx.get("why", "")))
+            f.write("\nThe cut below already includes these. The spans listed next\n"
+                    "are what still needs a human eye.\n\n")
 
         if flags:
             f.write("SPANS TO CHECK (%d)\n" % len(flags))

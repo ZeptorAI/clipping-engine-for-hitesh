@@ -21,6 +21,7 @@ from urllib.parse import quote
 
 from flask import Blueprint, jsonify, request
 
+import autofix
 import editlog
 import review as review_mod
 import tighten as tighten_mod
@@ -74,6 +75,19 @@ def _safe_name(name):
     return stem[:80] + ext.lower()
 
 
+def _merge_cost(*usages):
+    """Sum the model spend from every call this job made."""
+    total, model = 0.0, None
+    for u in usages:
+        if not u:
+            continue
+        total += u.get("cost_usd") or 0
+        model = model or u.get("model")
+    if model is None:
+        return None
+    return {"model": model, "cost_usd": round(total, 4)}
+
+
 def _find_media(job_dir):
     for n in sorted(os.listdir(job_dir)):
         if os.path.splitext(n)[1].lower() in MEDIA_EXTS:
@@ -117,17 +131,64 @@ def _pipeline(job_dir, job_id):
                 # a failed review must never lose the user their cut
                 _write_status(job_dir, review_error=str(e))
 
+        # ---- auto-fix: turn the flags into overrides and re-cut ----
+        # Only runs when review found something. Every proposed window is
+        # validated before use, and the re-cut is kept only if it measurably
+        # beats the original - otherwise the first cut stands.
+        applied, rejected, fix_usage = [], [], None
+        if flags and os.environ.get("AUTOFIX", "1") != "0":
+            try:
+                _write_status(job_dir, stage="Working out how to fix %d issue(s)..."
+                              % len(flags))
+                proposed, fix_usage = autofix.propose(transcript, flags)
+                words0 = tighten_mod.load_words(transcript)
+                deleted0, _ = tighten_mod.detect_repeats(words0)
+                sem0 = tighten_mod.keep_intervals(words0, deleted0)
+                applied, rejected = autofix.validate(
+                    proposed, sem0, stats["source_sec"], words0)
+
+                if applied:
+                    _write_status(job_dir, stage="Re-cutting with %d fix(es)..."
+                                  % len(applied))
+                    fixed_path = out_path + ".fix" + os.path.splitext(out_path)[1]
+                    stats2 = tighten_mod.tighten(
+                        media, transcript, fixed_path, overrides=applied,
+                        workdir=job_dir,
+                        progress=lambda m: _write_status(job_dir, stage=m))
+                    flags2, u3 = review_mod.review(transcript, stats2["keeps"])
+                    if u3 and fix_usage:
+                        fix_usage = dict(
+                            fix_usage,
+                            cost_usd=round((fix_usage.get("cost_usd") or 0)
+                                           + (u3.get("cost_usd") or 0), 4))
+                    if autofix.better(flags2, flags):
+                        os.replace(fixed_path, out_path)
+                        stats, flags = stats2, flags2
+                    else:
+                        # the re-cut did not help; keep the original
+                        applied = []
+                        try:
+                            os.remove(fixed_path)
+                        except OSError:
+                            pass
+            except Exception as e:
+                # a failed repair must never cost the user their cut
+                _write_status(job_dir, autofix_error=str(e))
+                applied = []
+
         words = tighten_mod.load_words(transcript)
         lines = tighten_mod.cut_lines(words, stats["keeps"])
         log_name = stem + "_TIGHT_editlog.txt"
         editlog.write_editlog(os.path.join(job_dir, log_name),
-                              os.path.basename(media), stats, lines, flags)
+                              os.path.basename(media), stats, lines, flags,
+                              fixes=applied)
 
         stats.pop("keeps", None)  # too big for the status payload
         _write_status(
             job_dir, status="done", stage="", message="",
             mode="tighten", tighten=stats, flags=flags,
-            cost=usage or _read_status(job_dir).get("cost"),
+            fixes_applied=applied, fixes_rejected=rejected,
+            cost=_merge_cost(usage, fix_usage),
             outputs=[
                 {"name": out_name,
                  "url": "/jobs/%s/%s" % (job_id, quote(out_name)),
@@ -200,6 +261,7 @@ PAGE_TMPL = """<!doctype html><meta charset="utf-8">
   .flag{border:1px solid #26262c;border-left:3px solid #e0a93e;border-radius:8px;
     padding:10px 12px;margin:8px 0;background:#141418;font-size:13px}
   .flag.high{border-left-color:#e06a6a}
+  .flag.fixed{border-left-color:#3ecf8e}
   .flag .t{color:#8a8a92;font-size:12px}
   .flag .q{color:#e8e8ea;margin:4px 0}
   .flag .i{color:#b7b7bf}
@@ -250,14 +312,22 @@ function renderDone(d,jobId){
     +'<div>Retake cuts<b>'+(t.retake_cuts||0)+'</b></div>'
     +'<div>Speech kept<b>'+(t.speech_kept_pct||0)+'%</b></div></div>';
   (d.outputs||[]).forEach((o,i)=>{h+='<a class="dl'+(i?' alt':'')+'" href="'+o.url+'" download>'+esc(o.label)+'</a>';});
+  const fx=d.fixes_applied||[];
+  if(fx.length){
+    h+='<h2 class="rh">'+fx.length+' issue'+(fx.length>1?'s':'')+' repaired automatically</h2>';
+    fx.forEach(f=>{h+='<div class="flag fixed">'
+      +'<div class="t">FIXED &middot; at '+f.win[0].toFixed(2)+'s</div>'
+      +'<div class="i">'+esc(f.why||'')+'</div></div>';});
+  }
   if(fl.length){
-    h+='<h2 class="rh">'+fl.length+' span'+(fl.length>1?'s':'')+' worth checking</h2>';
+    h+='<h2 class="rh">'+fl.length+' span'+(fl.length>1?'s':'')+' still worth checking</h2>';
     fl.forEach(f=>{h+='<div class="flag '+(f.severity==='high'?'high':'')+'">'
       +'<div class="t">'+f.severity.toUpperCase()+' &middot; line '+f.line+' &middot; '+f.start.toFixed(2)+'s</div>'
       +'<div class="q">'+esc(f.text||'(no words)')+'</div>'
       +'<div class="i">'+esc(f.issue)+'</div>'
       +(f.fix?'<div class="f">Fix: '+esc(f.fix)+'</div>':'')+'</div>';});
-  } else { h+='<p class="ok">Review pass found no broken sentences.</p>'; }
+  } else { h+='<p class="ok">'+(fx.length?'Nothing else':'Review pass found nothing')
+             +' broken.</p>'; }
   results.innerHTML=h;
 }
 async function loadRecent(){
