@@ -24,6 +24,9 @@ import brain
 import tighten
 
 DEFAULT_MODEL = "claude-sonnet-5"
+MAX_TOKENS = 32000   # measured: one 8-flag plan spent 14k, nearly all on
+                     # thinking. The old 16k default sat right on that ceiling,
+                     # and crossing it truncated the JSON into "no repairs".
 CTX_PAD = 6.0        # seconds of word context shown either side of a flag
 MIN_KEEP = 0.05      # a keep shorter than this is not a real span
 
@@ -105,11 +108,18 @@ def propose(transcript_path, flags, model=None):
 
     client = brain._client()
     model = model or os.environ.get("AUTOFIX_MODEL") or DEFAULT_MODEL
-    text, usage = brain._call(client, SYSTEM, user, model=model)
+    text, usage = brain._call(client, SYSTEM, user, model=model,
+                              max_tokens=MAX_TOKENS)
+    # A cut-off reply used to look exactly like "nothing worth repairing".
+    # Say so instead: the caller keeps the first cut and records why.
+    if (usage or {}).get("stop_reason") == "max_tokens":
+        raise RuntimeError("repair plan was cut off at the %d-token budget"
+                           % MAX_TOKENS)
     try:
         data = brain._parse_json(text)
-    except Exception:
-        return [], usage
+    except Exception as e:
+        raise RuntimeError("could not read the repair plan (%s): %.200s"
+                           % (e.__class__.__name__, text))
 
     out = []
     for o in (data.get("overrides") or []):

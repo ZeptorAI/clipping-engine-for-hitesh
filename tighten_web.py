@@ -121,6 +121,7 @@ def _pipeline(job_dir, job_id):
             media, transcript, out_path, workdir=job_dir,
             progress=lambda m: _write_status(job_dir, stage=m))
 
+        _write_status(job_dir, review_error=None, autofix_error=None)
         flags, usage = [], None
         if os.environ.get("REVIEW", "1") != "0":
             _write_status(job_dir, status="processing",
@@ -326,8 +327,14 @@ function renderDone(d,jobId){
       +'<div class="q">'+esc(f.text||'(no words)')+'</div>'
       +'<div class="i">'+esc(f.issue)+'</div>'
       +(f.fix?'<div class="f">Fix: '+esc(f.fix)+'</div>':'')+'</div>';});
+  } else if(d.review_error){
+    h+='<p class="err">Review did not finish: '+esc(d.review_error)
+      +'. The cut above is still good - it just was not checked.</p>';
   } else { h+='<p class="ok">'+(fx.length?'Nothing else':'Review pass found nothing')
              +' broken.</p>'; }
+  if(d.autofix_error){
+    h+='<p class="err">Auto-repair was skipped: '+esc(d.autofix_error)+'</p>';
+  }
   results.innerHTML=h;
 }
 async function loadRecent(){

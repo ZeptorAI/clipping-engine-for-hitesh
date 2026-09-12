@@ -20,6 +20,7 @@ import brain
 import tighten
 
 DEFAULT_REVIEW_MODEL = "claude-sonnet-5"
+MAX_TOKENS = 32000   # headroom over adaptive thinking; see autofix.MAX_TOKENS
 
 SYSTEM = """You are proofreading an automated video edit of a Hinglish (Hindi + \
 English) voiceover.
@@ -69,12 +70,18 @@ def review(transcript_path, keeps, model=None):
 
     client = brain._client()
     model = model or os.environ.get("REVIEW_MODEL") or DEFAULT_REVIEW_MODEL
-    text, usage = brain._call(client, SYSTEM, user, model=model)
-
+    text, usage = brain._call(client, SYSTEM, user, model=model,
+                              max_tokens=MAX_TOKENS)
+    # Truncated or unparseable used to return zero flags, which reads as
+    # "the cut is clean" - the one answer we must never fake.
+    if (usage or {}).get("stop_reason") == "max_tokens":
+        raise RuntimeError("review was cut off at the %d-token budget"
+                           % MAX_TOKENS)
     try:
         data = brain._parse_json(text)
-    except Exception:
-        return [], usage
+    except Exception as e:
+        raise RuntimeError("could not read the review (%s): %.200s"
+                           % (e.__class__.__name__, text))
 
     by_line = {l["line"]: l for l in lines}
     flags = []

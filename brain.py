@@ -162,18 +162,28 @@ def _client():
     return anthropic.Anthropic(api_key=key)
 
 
-def _call(client, system, user, model=None):
+def _call(client, system, user, model=None, max_tokens=16000):
     import anthropic
     model = model or os.environ.get("CLIP_MODEL") or DEFAULT_MODEL
     effort = os.environ.get("CLIP_EFFORT", "xhigh")
-    kwargs = dict(model=model, max_tokens=16000, system=system,
+    kwargs = dict(model=model, max_tokens=max_tokens, system=system,
                   messages=[{"role": "user", "content": user}])
+
+    def send(**extra):
+        # Adaptive thinking spends the budget too, so a task that reasons a lot
+        # can run most of max_tokens before writing a character. Above 16k the
+        # SDK refuses a non-streaming request (it could exceed 10 minutes), so
+        # stream there. At or below 16k nothing changes for the clip picker.
+        if max_tokens > 16000:
+            with client.messages.stream(**extra, **kwargs) as st:
+                return st.get_final_message()
+        return client.messages.create(**extra, **kwargs)
+
     try:
-        resp = client.messages.create(
-            thinking={"type": "adaptive"},
-            output_config={"effort": effort}, **kwargs)
+        resp = send(thinking={"type": "adaptive"},
+                    output_config={"effort": effort})
     except anthropic.BadRequestError:
-        resp = client.messages.create(**kwargs)
+        resp = send()
     text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
     u = resp.usage
     in_tok = u.input_tokens + getattr(u, "cache_read_input_tokens", 0) \
@@ -182,7 +192,8 @@ def _call(client, system, user, model=None):
     in_rate, out_rate = RATES.get(model, (5.0, 25.0))
     cost = in_tok / 1e6 * in_rate + out_tok / 1e6 * out_rate
     usage = {"model": model, "input_tokens": in_tok,
-             "output_tokens": out_tok, "cost_usd": round(cost, 4)}
+             "output_tokens": out_tok, "cost_usd": round(cost, 4),
+             "stop_reason": getattr(resp, "stop_reason", None)}
     return text, usage
 
 
